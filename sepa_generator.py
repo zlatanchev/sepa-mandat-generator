@@ -5,6 +5,7 @@ from docxtpl import DocxTemplate
 from docx import Document
 import os
 from docxcompose.composer import Composer
+import pprint
 
 class SepaGeneratorApp:
     def __init__(self, root):
@@ -78,6 +79,11 @@ class SepaGeneratorApp:
         clean_iban = str(iban).replace(' ', '')
         return ' '.join(clean_iban[i:i+4] for i in range(0, len(clean_iban), 4))
 
+# Add this new import at the top of your file
+
+
+# ... (the rest of your SepaGeneratorApp class remains the same until this function)
+
     def generate_documents(self):
         if not all([self.excel_path.get(), self.template_path.get(), self.output_path.get()]):
             messagebox.showerror("Fehler", "Bitte wählen Sie eine Excel-Datei, eine Word-Vorlage und einen Speicherordner aus.")
@@ -92,15 +98,14 @@ class SepaGeneratorApp:
             mandates_data = {}
             for index, row in df.iterrows():
                 kontoinhaber = str(row['Kontoinhaber']).strip()
-                # KORREKTUR: 'IBan' wurde zu 'IBAN' (Großbuchstabe) geändert.
                 iban = str(row['IBAN']).strip()
                 child_name = str(row['Name Kind']).strip()
                 geschwister_names = str(row['Geschwister']).strip()
 
-                # Skip a row only if BOTH child name fields are completely empty.
                 if not child_name and not geschwister_names:
                     continue
 
+                # Create the complete set of children for the current row
                 kinder_in_row = set()
                 if child_name:
                     kinder_in_row.add(child_name)
@@ -108,18 +113,25 @@ class SepaGeneratorApp:
                     geschwister_liste = [g.strip() for g in geschwister_names.split(',') if g.strip()]
                     kinder_in_row.update(geschwister_liste)
                 
+                # --- DEFINITIVE GROUPING LOGIC ---
+                iban_for_grouping_key = iban.replace(' ', '')
                 grouping_key = ""
-                
-                # Case A: Kontoinhaber and IBAN are present -> Group the mandate.
-                if kontoinhaber and iban:
-                    grouping_key = f"{kontoinhaber}_{iban}"
-                
-                # Case B: Kontoinhaber or IBAN is missing -> Create a unique, individual mandate for this row.
-                else:
-                    grouping_key = f"individual_mandate_row_{index}"
 
-                
+                if iban_for_grouping_key:
+                    # Priority 1: The IBAN is the most reliable key.
+                    grouping_key = f"IBAN_{iban_for_grouping_key}"
+                elif kinder_in_row:
+                    # Priority 2: If no IBAN, create a key from the sorted list of all children.
+                    # This correctly groups rows that describe the same family unit.
+                    sorted_kinder_for_key = sorted(list(kinder_in_row))
+                    grouping_key = "FAMILY_" + "_".join(sorted_kinder_for_key)
+                else:
+                    # Fallback for a row that somehow has no children (should not happen due to initial check).
+                    grouping_key = f"INDIVIDUAL_ROW_{index}"
+                # --- END OF LOGIC ---
+
                 if grouping_key not in mandates_data:
+                    # This is the FIRST time we're seeing this group.
                     mandates_data[grouping_key] = {
                         'Kontoinhaber': kontoinhaber,
                         'IBAN': self.format_iban(iban),
@@ -127,8 +139,15 @@ class SepaGeneratorApp:
                         'KINDER': kinder_in_row
                     }
                 else:
-                    # This block only runs for Case A (Grouping)
+                    # We have seen this group before. Add the children and update info if needed.
                     mandates_data[grouping_key]['KINDER'].update(kinder_in_row)
+                    if not mandates_data[grouping_key]['Kontoinhaber'] and kontoinhaber:
+                         mandates_data[grouping_key]['Kontoinhaber'] = kontoinhaber
+                    if not mandates_data[grouping_key]['IBAN'] and iban:
+                         mandates_data[grouping_key]['IBAN'] = self.format_iban(iban)
+                    if not mandates_data[grouping_key]['BIC'] and row['BIC']:
+                         mandates_data[grouping_key]['BIC'] = str(row['BIC']).strip()
+
 
             # The rest of the function remains unchanged
             contexts = []
