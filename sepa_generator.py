@@ -92,27 +92,30 @@ class SepaGeneratorApp:
             mandates_data = {}
             for index, row in df.iterrows():
                 kontoinhaber = str(row['Kontoinhaber']).strip()
+                # KORREKTUR: 'IBan' wurde zu 'IBAN' (Großbuchstabe) geändert.
                 iban = str(row['IBAN']).strip()
                 child_name = str(row['Name Kind']).strip()
+                geschwister_names = str(row['Geschwister']).strip()
 
-                # FINALE BEDINGUNG: Überspringe eine Zeile nur, wenn der Name des Kindes komplett fehlt.
-                if not child_name:
+                # Skip a row only if BOTH child name fields are completely empty.
+                if not child_name and not geschwister_names:
                     continue
 
-                kinder_in_row = {child_name}
+                kinder_in_row = set()
+                if child_name:
+                    kinder_in_row.add(child_name)
+                if geschwister_names:
+                    geschwister_liste = [g.strip() for g in geschwister_names.split(',') if g.strip()]
+                    kinder_in_row.update(geschwister_liste)
                 
-                # Wir entscheiden, wie wir den Eintrag behandeln:
-                # Fall A: Kontoinhaber und IBAN sind vorhanden -> Mandat kann gruppiert werden.
+                grouping_key = ""
+                
+                # Case A: Kontoinhaber and IBAN are present -> Group the mandate.
                 if kontoinhaber and iban:
                     grouping_key = f"{kontoinhaber}_{iban}"
-                    # Geschwister nur bei Gruppierung berücksichtigen
-                    if row['Geschwister']:
-                        geschwister_liste = [g.strip() for g in str(row['Geschwister']).split(',') if g.strip()]
-                        kinder_in_row.update(geschwister_liste)
                 
-                # Fall B: Eines der Felder fehlt -> Mandat wird immer individuell erstellt.
+                # Case B: Kontoinhaber or IBAN is missing -> Create a unique, individual mandate for this row.
                 else:
-                    # Der eindeutige Schlüssel aus dem Zeilenindex stellt sicher, dass es ein separates Mandat wird.
                     grouping_key = f"individual_mandate_row_{index}"
 
                 
@@ -124,10 +127,10 @@ class SepaGeneratorApp:
                         'KINDER': kinder_in_row
                     }
                 else:
-                    # Dieser Teil wird nur für Fall A (Gruppierung) ausgeführt
+                    # This block only runs for Case A (Grouping)
                     mandates_data[grouping_key]['KINDER'].update(kinder_in_row)
 
-            # Der Rest der Funktion (Vorbereiten, Sortieren, Generieren) bleibt unverändert
+            # The rest of the function remains unchanged
             contexts = []
             for _, data in mandates_data.items():
                 sorted_kinder = sorted(list(data['KINDER']))
@@ -165,7 +168,8 @@ class SepaGeneratorApp:
 
         except Exception as e:
             self.status_var.set("Ein Fehler ist aufgetreten!")
-            messagebox.showerror("Fehler bei der Verarbeitung", f"Ein unerwarteter Fehler ist aufgetreten:\n\n{str(e)}")   
+            messagebox.showerror("Fehler bei der Verarbeitung", f"Ein unerwarteter Fehler ist aufgetreten:\n\n'{e}'")
+              
 if __name__ == "__main__":
     root = tk.Tk()
     app = SepaGeneratorApp(root)
