@@ -4,6 +4,7 @@ import pandas as pd
 from docxtpl import DocxTemplate
 from docx import Document
 import os
+from docxcompose.composer import Composer
 
 class SepaGeneratorApp:
     def __init__(self, root):
@@ -86,79 +87,85 @@ class SepaGeneratorApp:
         self.root.update_idletasks()
 
         try:
-            df = pd.read_excel(self._full_excel_path)
+            df = pd.read_excel(self._full_excel_path).fillna('')
             
             mandates_data = {}
-            for _, row in df.iterrows():
-                kontoinhaber = row['Kontoinhaber']
-                kinder = set()
-                if pd.notna(row['Name Kind']):
-                    kinder.add(str(row['Name Kind']).strip())
-                if pd.notna(row['Geschwister']):
-                    geschwister_liste = [g.strip() for g in str(row['Geschwister']).split(',') if g.strip()]
-                    kinder.update(geschwister_liste)
+            for index, row in df.iterrows():
+                kontoinhaber = str(row['Kontoinhaber']).strip()
+                iban = str(row['IBAN']).strip()
+                child_name = str(row['Name Kind']).strip()
+
+                # FINALE BEDINGUNG: Überspringe eine Zeile nur, wenn der Name des Kindes komplett fehlt.
+                if not child_name:
+                    continue
+
+                kinder_in_row = {child_name}
                 
-                if kontoinhaber not in mandates_data:
-                    mandates_data[kontoinhaber] = {
-                        'IBAN': self.format_iban(row['IBAN']),
-                        'BIC': row['BIC'],
-                        'KINDER': kinder
+                # Wir entscheiden, wie wir den Eintrag behandeln:
+                # Fall A: Kontoinhaber und IBAN sind vorhanden -> Mandat kann gruppiert werden.
+                if kontoinhaber and iban:
+                    grouping_key = f"{kontoinhaber}_{iban}"
+                    # Geschwister nur bei Gruppierung berücksichtigen
+                    if row['Geschwister']:
+                        geschwister_liste = [g.strip() for g in str(row['Geschwister']).split(',') if g.strip()]
+                        kinder_in_row.update(geschwister_liste)
+                
+                # Fall B: Eines der Felder fehlt -> Mandat wird immer individuell erstellt.
+                else:
+                    # Der eindeutige Schlüssel aus dem Zeilenindex stellt sicher, dass es ein separates Mandat wird.
+                    grouping_key = f"individual_mandate_row_{index}"
+
+                
+                if grouping_key not in mandates_data:
+                    mandates_data[grouping_key] = {
+                        'Kontoinhaber': kontoinhaber,
+                        'IBAN': self.format_iban(iban),
+                        'BIC': str(row['BIC']).strip(),
+                        'KINDER': kinder_in_row
                     }
                 else:
-                    mandates_data[kontoinhaber]['KINDER'].update(kinder)
+                    # Dieser Teil wird nur für Fall A (Gruppierung) ausgeführt
+                    mandates_data[grouping_key]['KINDER'].update(kinder_in_row)
 
+            # Der Rest der Funktion (Vorbereiten, Sortieren, Generieren) bleibt unverändert
             contexts = []
-            for kontoinhaber, data in mandates_data.items():
+            for _, data in mandates_data.items():
                 sorted_kinder = sorted(list(data['KINDER']))
+                if not sorted_kinder:
+                    continue
                 contexts.append({
-                    'KONTOINHABER': kontoinhaber,
+                    'KONTOINHABER': data['Kontoinhaber'],
                     'IBAN': data['IBAN'],
                     'BIC': data['BIC'],
                     'KINDERLISTE': ', '.join(sorted_kinder),
-                    'sort_key': sorted_kinder[0] if sorted_kinder else ''
+                    'sort_key': sorted_kinder[0]
                 })
             
             sorted_contexts = sorted(contexts, key=lambda x: x['sort_key'])
 
-            # --- NEUE LOGIK ZUR DOKUMENTENERSTELLUNG (Version 3) ---
-            
-            # Fall behandeln, falls keine Daten vorhanden sind
             if not sorted_contexts:
-                self.status_var.set("Keine Daten in der Excel-Datei gefunden.")
-                messagebox.showinfo("Information", "Keine Daten zum Generieren in der Excel-Datei gefunden.")
+                self.status_var.set("Keine gültigen Daten in der Excel-Datei gefunden.")
+                messagebox.showinfo("Information", "Keine gültigen Daten zum Generieren gefunden.")
                 return
 
-            # 1. Das erste Mandat wird als Basis für das gesamte Dokument generiert
-            first_context = sorted_contexts[0]
-            tpl = DocxTemplate(self._full_template_path)
-            tpl.render(first_context)
-            final_doc = tpl.docx  # Dies ist jetzt unser Zieldokument, beginnend mit dem ersten Mandat.
+            master_tpl = DocxTemplate(self._full_template_path)
+            master_tpl.render(sorted_contexts[0])
+            composer = Composer(master_tpl.docx)
 
-            # 2. Iteriere durch die restlichen Kontexte (beginnend mit dem ZWEITEN)
             for context in sorted_contexts[1:]:
-                # Füge ZUERST einen Seitenumbruch hinzu
-                final_doc.add_page_break()
-
-                # Erstelle eine neue Vorlagen-Instanz für das nächste Mandat
-                tpl_next = DocxTemplate(self._full_template_path)
-                tpl_next.render(context)
-                
-                # Füge den Inhalt des neu gefüllten Dokuments zum Zieldokument hinzu
-                for element in tpl_next.docx.element.body:
-                    final_doc.element.body.append(element)
+                tpl_to_append = DocxTemplate(self._full_template_path)
+                tpl_to_append.render(context)
+                composer.append(tpl_to_append.docx)
             
-            # 3. Speichere das finale Gesamtdokument
             output_filename = os.path.join(self._full_output_path, "SEPA-Mandate_gesamt.docx")
-            final_doc.save(output_filename)
-            # --- ENDE DER NEUEN LOGIK ---
+            composer.save(output_filename)
 
             self.status_var.set(f"Erfolg! Datei wurde gespeichert unter:\n{output_filename}")
-            messagebox.showinfo("Erfolg", f"Die SEPA-Mandate wurden erfolgreich generiert und in der Datei 'SEPA-Mandate_gesamt.docx' gespeichert.")
+            messagebox.showinfo("Erfolg", f"Die SEPA-Mandate wurden erfolgreich generiert.")
 
         except Exception as e:
             self.status_var.set("Ein Fehler ist aufgetreten!")
-            messagebox.showerror("Fehler bei der Verarbeitung", f"Ein unerwarteter Fehler ist aufgetreten:\n\n{str(e)}")
-
+            messagebox.showerror("Fehler bei der Verarbeitung", f"Ein unerwarteter Fehler ist aufgetreten:\n\n{str(e)}")   
 if __name__ == "__main__":
     root = tk.Tk()
     app = SepaGeneratorApp(root)
